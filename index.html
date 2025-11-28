@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Project Lite - JSON Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+    }
+
+    h1 {
+      text-align: center;
+    }
+
+    #fileInput {
+      margin: 20px auto;
+      display: block;
+    }
+
+    .canvas-container {
+      width: 100%;
+      height: calc(100vh - 160px);
+      overflow: auto;       /* cho phép cuộn cả ngang và dọc */
+      border: 1px solid #333;
+      background: #fff;
+    }
+
+    #timelineCanvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h1>Project Lite</h1>
+
+  <input title="Chọn tệp json" type="file" id="fileInput" accept=".json" />
+
+  <div class="canvas-container">
+    <canvas id="timelineCanvas"></canvas>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const canvas = document.getElementById("timelineCanvas");
+    const ctx = canvas.getContext("2d");
+
+    fileInput.addEventListener("change", (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const project = JSON.parse(e.target.result);
+          drawTimeline(project);
+        } catch (err) {
+          alert("Không đọc được JSON: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    function drawTimeline(project) {
+      const phases = project.Phases || [];
+      if (phases.length === 0) return;
+
+      // Tìm min/max thời gian
+      const minDate = new Date(Math.min(...phases.map(p => snapToEndOfDay(new Date(p.StartAt).addDays(-3)))));
+      const maxDate = new Date(Math.max(...phases.map(p => snapToEndOfDay(new Date(p.EndAt).addDays(4)))));
+      const totalMs = maxDate - minDate;
+
+      // Chọn scale: số pixel cho mỗi ngày
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const totalDays = Math.ceil(totalMs / msPerDay);
+      const scale = 120; // px cho mỗi ngày
+
+      // Đặt canvas width theo tổng số ngày
+      canvas.width = totalDays * scale;
+      canvas.height = 1600;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      let axisY = 100;
+
+      // Vẽ trục timeline ngang
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(20, axisY);
+      ctx.lineTo(canvas.width - 20, axisY);
+      ctx.stroke();
+
+      ctx.font = "12px Arial";
+
+      // Vẽ các nhãn ngày + đường dọc
+      for (let d = new Date(minDate); d <= maxDate; d.setDate(d.getDate() + 1)) {
+        const x = 20 + ((d - minDate) / msPerDay) * scale;
+
+        // Vẽ đường dọc theo ngày
+        ctx.strokeStyle = "#00fff2ff";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, axisY - 50);
+        ctx.lineTo(x, canvas.height - 20);
+        ctx.stroke();
+
+        // Vẽ nhãn ngày
+        ctx.fillStyle = "#000";
+        ctx.textAlign = "center";
+        const day = String(d.getDate()).padStart(2, "0");
+        const month = String(d.getMonth() + 1).padStart(2, "0");
+        const label = `${day}/${month}`;
+        ctx.fillText(label, x, axisY + 15);
+      }
+
+      // Vẽ các Phase, Category, Task
+      axisY += 50;
+      phases.forEach((phase) => {
+        const start = snapToEndOfDay(new Date(phase.StartAt));
+        const end = snapToEndOfDay(new Date(phase.EndAt).addDays(1));
+
+        const startX = 20 + ((start - minDate) / msPerDay) * scale;
+        const endX = 20 + ((end - minDate + 1) / msPerDay) * scale;
+
+        // Vẽ Phase box
+        ctx.fillStyle = "#4CAF50";
+        ctx.fillRect(startX, axisY - 20, endX - startX, 40);
+        ctx.fillStyle = "#fff";
+        ctx.font = "14px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(phase.Name, (startX + endX) / 2, axisY);
+
+        // Border cho Phase
+        ctx.strokeStyle = "#000";   // màu viền
+        ctx.lineWidth = 2;
+        ctx.strokeRect(startX, axisY - 20, endX - startX, 40);
+
+        // Categories
+        const catY = axisY + 60;
+        (phase.Categories || []).forEach((cat) => {
+          const catStart = snapToEndOfDay(new Date(cat.StartAt));
+          const catEnd = snapToEndOfDay(new Date(cat.EndAt).addDays(1));
+          const catStartX = 20 + ((catStart - minDate) / msPerDay) * scale;
+          const catEndX = 20 + ((catEnd - minDate + 1) / msPerDay) * scale;
+
+          ctx.fillStyle = "#2196F3";
+          ctx.fillRect(catStartX, catY, catEndX - catStartX, 30);
+
+          ctx.fillStyle = "#fff";
+          ctx.textAlign = "center";
+          ctx.fillText(cat.Name, (catStartX + catEndX) / 2, catY + 20);
+
+          // Border cho Category
+          ctx.strokeStyle = "#000";
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(catStartX, catY, catEndX - catStartX, 30);
+
+          // Tasks
+          (cat.Tasks || [])
+            .slice()
+            .sort((a, b) => a.ZIndex - b.ZIndex)
+            .forEach((task, k) => {
+              const taskStart = snapToEndOfDay(new Date(task.StartAt));
+              const taskEnd = snapToEndOfDay(new Date(task.EndAt).addDays(1));
+              const taskStartX = 20 + ((taskStart - minDate) / msPerDay) * scale;
+              const taskEndX = 20 + ((taskEnd - minDate) / msPerDay) * scale;
+              const taskHeight = 40;
+              const taskY = catY + 50 + k * (taskHeight + 10);
+
+              // Vẽ thanh task
+              ctx.fillStyle = task.ColorHex || "#3CB371";
+              ctx.fillRect(taskStartX, taskY, taskEndX - taskStartX, taskHeight);
+
+              // Vẽ chữ bên trong thanh
+              ctx.fillStyle = "#000";
+              ctx.font = "12px Arial";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              const textX = (taskStartX + taskEndX) / 2;
+              const textY = taskY + taskHeight / 2;
+              ctx.fillText(task.Name, textX, textY);
+
+              // Border cho Task
+              ctx.strokeStyle = "#000";
+              ctx.lineWidth = 1;
+              ctx.strokeRect(taskStartX, taskY, taskEndX - taskStartX, taskHeight);
+
+              // Nếu Completed thì vẽ gạch ngang qua chữ
+              if (task.Status === 1) {
+                const textWidth = ctx.measureText(task.Name).width;
+                ctx.strokeStyle = "#ce1616ff";
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(textX - textWidth / 2, textY);
+                ctx.lineTo(textX + textWidth / 2, textY);
+                ctx.stroke();
+              }
+
+              // Vẽ line ngay dưới task
+              ctx.strokeStyle = "#00fff2ff";
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(20, taskY + taskHeight + 5);
+              ctx.lineTo(canvas.width - 20, taskY + taskHeight + 5);
+              ctx.stroke();
+            });
+        });
+      });
+    }
+
+    // Hàm tiện ích
+    Date.prototype.addDays = function(days) {
+      const date = new Date(this.valueOf());
+      date.setDate(date.getDate() + days);
+      return date;
+    };
+
+    function snapToEndOfDay(date) {
+      const d = new Date(date);
+      d.setHours(23, 59, 59, 999);
+      return d;
+    }
+
+  </script>
+</body>
+</html>
